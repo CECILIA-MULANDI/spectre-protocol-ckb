@@ -1,0 +1,19 @@
+node_modules/
+target/
+dist/
+build/
+out/
+cache/
+*.node
+.env
+.DS_Store
+
+# Test emails — may contain personal data
+*.eml
+
+# Circuit build artifacts
+circuits/target/
+circuits/out/
+
+# Personal working docs — not for public repo
+docs/

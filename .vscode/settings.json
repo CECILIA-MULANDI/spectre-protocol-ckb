@@ -1,0 +1,9 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "contracts/spectre-contracts/Cargo.toml"
+  ],
+  "rust-analyzer.cargo.features": [],
+  "rust-analyzer.cargo.extraEnv": {
+    "RUSTUP_TOOLCHAIN": "stable"
+  }
+}

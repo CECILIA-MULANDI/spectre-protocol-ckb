@@ -16,13 +16,3 @@ spectre/
 │       └── agent-lock/   # Lock script controlling the agent cell
 └── relayer/         # Off-chain: email parser, ZK prover, CKB tx builder
 ```
-
-## Status
-
-Active development. Phase 1: agent cell lock script on CKB devnet.
-
-## Tech
-
-- **ZK circuit**: Noir + Barretenberg (DKIM signature verification)
-- **On-chain**: Rust → RISC-V (CKB-VM), `ckb-std`
-- **Off-chain**: TypeScript, `ckb-sdk`

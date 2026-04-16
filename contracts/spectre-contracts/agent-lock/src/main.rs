@@ -13,9 +13,28 @@ use blake2::{
     Blake2bVar,
     digest::{Update, VariableOutput},
 };
+use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use secp256k1::{Message, Secp256k1};
+
 use ckb_std::ckb_constants::Source;
 use ckb_std::high_level::{load_script, load_tx_hash, load_witness_args};
-use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+
+// agent-lock: authorizes spending of the agent cell.
+//
+// Responsibility: verify that the spender holds the private key corresponding
+// to the blake160 pubkey hash stored in lock.args. Nothing more.
+//
+// What this script does NOT do (by design):
+//   - Nonce enforcement: nonce lives in cell data (AgentRecord) and is
+//     validated by the agent-type script (Phase 2). CKB's cell model already
+//     prevents replay for sig-based rotation — a spent cell is consumed and
+//     cannot be re-used. Nonce becomes critical for ZK recovery (Phase 3-4)
+//     where proofs reference a specific nonce; that check belongs in agent-type.
+//   - State transitions: AgentRecord schema and mutation rules are agent-type's job.
+//   - ZK proof verification: handled by a separate PLONK verifier script (Phase 4).
+//
+// lock.args layout: [blake160(owner_pubkey)] = 20 bytes
+// witness layout:   [recovery_id (1)][r (32)][s (32)][compressed_pubkey (33)] = 98 bytes
 
 // Error codes
 // lock.args must be exactly 20 bytes (blake160 pubkey hash)
@@ -27,6 +46,7 @@ const ERROR_INVALID_SIGNATURE: i8 = 3;
 
 pub fn program_entry() -> i8 {
     // Read lock.args: this is the blake160 hash of the owner's pubkey.
+    // Script:{code_hash, hash_type,args}
     let script = match load_script() {
         Ok(s) => s,
         Err(_) => return ERROR_ARGS_LEN,
@@ -54,9 +74,6 @@ pub fn program_entry() -> i8 {
     if witness_bytes.len() != 98 {
         return ERROR_INVALID_WITNESS;
     }
-    let signature_bytes = &witness_bytes[..65];
-    let pubkey_bytes = &witness_bytes[65..];
-
     // Load the tx hash: this is what the owner signed.
     // It's already a hash so we use it directly as the message.
     let tx_hash = match load_tx_hash() {
@@ -64,38 +81,34 @@ pub fn program_entry() -> i8 {
         Err(_) => return ERROR_INVALID_WITNESS,
     };
 
-    // Verify the secp256k1 signature.
-    // signature_bytes layout: [recovery_id (1)][r (32)][s (32)] = 65 bytes
-    let recovery_id = match RecoveryId::from_byte(signature_bytes[0]) {
-        Some(id) => id,
-        None => return ERROR_INVALID_SIGNATURE,
+    let recovery_id = match RecoveryId::from_i32(witness_bytes[0] as i32) {
+        Ok(id) => id,
+        Err(_) => return ERROR_INVALID_SIGNATURE,
     };
-    let sig = match Signature::from_bytes(signature_bytes[1..65].into()) {
+    let sig = match RecoverableSignature::from_compact(&witness_bytes[1..65], recovery_id) {
         Ok(s) => s,
         Err(_) => return ERROR_INVALID_SIGNATURE,
     };
-    // Recover the public key from the signature + message hash.
-    // "prehash" means the message is already hashed — don't hash it again.
-    let recovered_key = match VerifyingKey::recover_from_prehash(&tx_hash, &sig, recovery_id) {
+    let msg = match Message::from_digest_slice(&tx_hash) {
+        Ok(m) => m,
+        Err(_) => return ERROR_INVALID_SIGNATURE,
+    };
+    let secp = Secp256k1::verification_only();
+    let recovered_key = match secp.recover_ecdsa(&msg, &sig) {
         Ok(k) => k,
         Err(_) => return ERROR_INVALID_SIGNATURE,
     };
+    let pubkey_serialized = recovered_key.serialize(); // [u8; 33], compressed
 
-    // blake160(recovered_pubkey) must equal lock.args.
-    // blake160 = first 20 bytes of blake2b-256 of the compressed pubkey.
-    let encoded = recovered_key.to_encoded_point(true); // true = compressed (33 bytes)
-
-    // blake160 = first 20 bytes of blake2b-256 of the pubkey.
+    if &witness_bytes[65..] != pubkey_serialized.as_ref() {
+        return ERROR_INVALID_SIGNATURE;
+    }
 
     let mut hasher = Blake2bVar::new(32).unwrap();
-    hasher.update(encoded.as_bytes());
+    hasher.update(&pubkey_serialized);
     let mut hash_out = [0u8; 32];
     hasher.finalize_variable(&mut hash_out).unwrap();
     let pubkey_hash = &hash_out[..20];
-
-    if pubkey_bytes != encoded.as_bytes() {
-        return ERROR_INVALID_SIGNATURE;
-    }
 
     if pubkey_hash != args_bytes.as_ref() {
         return ERROR_INVALID_SIGNATURE;

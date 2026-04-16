@@ -16,8 +16,10 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@ckb-ccc/ccc": "^1.1.25",
     "@types/mailparser": "^3.4.6",
     "dotenv": "^17.3.1",
-    "mailparser": "^3.9.4"
+    "mailparser": "^3.9.4",
+    "@noble/curves": "1.9.7"
   }
 }

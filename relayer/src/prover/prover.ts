@@ -90,19 +90,13 @@ export async function verifyProof(result: ProofResult): Promise<boolean> {
 
   try {
     await execAsync("bb", [
-      "prove",
+      "verify",
       "-s",
       "ultra_honk",
-      "-b",
-      CIRCUIT_JSON,
-      "-w",
-      WITNESS_GZ,
-      "-o",
-      PROOF_DIR,
-      "--oracle_hash",
-      "keccak",
-      "--write_vk",
-      "--verify",
+      "-p",
+      join(PROOF_DIR, "proof"),
+      "-k",
+      join(PROOF_DIR, "vk"),
     ]);
     return true;
   } catch {

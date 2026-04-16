@@ -17,3 +17,5 @@ circuits/out/
 
 # Personal working docs — not for public repo
 docs/
+CLAUDE.md
+.claude/

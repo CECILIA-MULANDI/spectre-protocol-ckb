@@ -26,7 +26,7 @@ async function main() {
   );
   console.log("Fetched RSA pubkey from DNS ✓");
 
-  // Use a dummy new_public_key and nonce=1 for testing
+
   const witness = buildWitness(parsed, pubkey, 1n, 1n);
 
   // Format as TOML for Prover.toml

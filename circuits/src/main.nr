@@ -4,14 +4,18 @@ use zkemail::{dkim::RSAPubkey, headers::email_address::get_email_address, Sequen
 global KEY_LIMBS_2048: u32 = 18;
 
 /// Private inputs:
-///   - email: raw email address as bytes (hidden from verifier)
+///   - header: raw canonicalized email header bytes (hidden from verifier)
+///   - signature: RSA-2048 DKIM signature over the header
+///   - from_header_sequence / from_address_sequence: byte positions of the FROM address in header
 /// Public inputs:
-///   - email_hash: SHA256 of the email, pre-stored on the Aztec contract
-///   - new_public_key: the recovery key(wallet key) to authorize (bound to proof to prevent front-running)
-///   - nonce: replay protection -- must match the nonce stored in the Aztec contract
+///   - pubkey: RSA public key used to verify the DKIM signature (fetched from DNS, committed on-chain)
+///   - email_hash: SHA256 of the FROM address, pre-stored in the CKB AgentRecord
+///   - new_public_key: the recovery key to rotate to (bound to proof to prevent front-running)
+///   - nonce: replay protection -- must match the nonce stored in the CKB AgentRecord
 ///
-/// The circuit hashes the private email and asserts it matches the public email_hash.
-/// Since new_public_key is a public input, it's baked into the proof -- any attempt to
+/// The circuit verifies the DKIM signature, extracts the FROM address, and asserts its
+/// SHA256 hash matches the public email_hash commitment stored on-chain.
+/// Since new_public_key is a public input, it is baked into the proof -- any attempt to
 /// substitute a different key after proof generation will cause verification to fail.
 
 // cap email to this to have fixed size at compile time

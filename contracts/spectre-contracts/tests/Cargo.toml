@@ -9,3 +9,5 @@ native-simulator = [ "ckb-testtool/native-simulator" ]
 [dependencies]
 ckb-testtool = "1.1"
 serde_json = "1.0"
+spectre-types = { path = "../crates/spectre-types" }
+molecule = "0.9"

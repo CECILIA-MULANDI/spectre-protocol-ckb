@@ -1,0 +1,13 @@
+// AgentRecord: on-chain state for a Spectre-protected agent cell.
+
+array Byte32 [byte;32];
+array Uint64 [byte;8];
+vector Bytes <byte>;
+
+table AgentRecord {
+    email_hash:           Byte32,
+    identity_commitment:  Byte32,
+    owner_pubkey:         Bytes,
+    timelock_blocks:      Uint64,
+    nonce:                Uint64,
+}

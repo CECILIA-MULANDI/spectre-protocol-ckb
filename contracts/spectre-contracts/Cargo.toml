@@ -6,8 +6,11 @@ members = [
   # detect insertion point for newly generated crates.
   # @@INSERTION_POINT@@
   "agent-lock",
+  "agent-type",
+  "crates/spectre-types",
   "tests",
 ]
+
 
 [profile.release]
 overflow-checks = true

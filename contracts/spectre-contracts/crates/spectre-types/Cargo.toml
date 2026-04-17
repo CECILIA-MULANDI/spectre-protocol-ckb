@@ -1,0 +1,10 @@
+[package]
+name = "spectre-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+molecule = { version = "0.9", default-features = false }
+
+[build-dependencies]
+molecule-codegen = "0.9"

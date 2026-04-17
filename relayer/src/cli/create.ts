@@ -1,13 +1,26 @@
+/**
+ * Creates agent cell on-chain
+ * This is what the lock script controls
+ */
 import * as ccc from "@ckb-ccc/ccc";
 import { blake2b } from "@noble/hashes/blake2.js";
 import * as dotenv from "dotenv";
 import { cccSigner } from "./network.js";
 import { loadConfig, saveConfig } from "./config.js";
+import { encodeAgentRecord } from "./molecule.js";
 dotenv.config();
-/**
- * Creates agent cell on-chain
- * This is what the lock script controls
- */
+
+const [email, secret, timelockArg] = process.argv.slice(2);
+if (!email || !secret)
+  throw new Error("usage: create.ts <email> <secret_phrase> [timelock_blocks]");
+const timelockBlocks = BigInt(timelockArg ?? "2880");
+
+// Hash email and secret phrase with CKB's blake2b-256.
+// These become the immutable recovery commitments stored on-chain.
+const emailHash = blake2b(new TextEncoder().encode(email), { dkLen: 32 });
+const identityCommitment = blake2b(new TextEncoder().encode(secret), {
+  dkLen: 32,
+});
 
 const config = await loadConfig();
 
@@ -21,16 +34,40 @@ const agentLockScript = ccc.Script.from({
   hashType: "data1",
   args: blake160,
 });
-
+const agentTypeScript = ccc.Script.from({
+  codeHash: config.typeCodeHash,
+  hashType: "data1",
+  args: "0x",
+});
+const record = encodeAgentRecord({
+  emailHash,
+  identityCommitment,
+  ownerPubkey: pubkeyBytes,
+  timelockBlocks: timelockBlocks,
+  nonce: 0n,
+});
 const tx = ccc.Transaction.from({
   cellDeps: [
     {
       outPoint: { txHash: config.codeCellTxHash, index: config.codeCellIndex },
       depType: "code",
     },
+    {
+      outPoint: {
+        txHash: config.typeCodeCellTxHash,
+        index: config.typeCodeCellIndex,
+      },
+      depType: "code",
+    },
   ],
-  outputs: [{ capacity: 62n * 100_000_000n, lock: agentLockScript }],
-  outputsData: ["0x"],
+  outputs: [
+    {
+      capacity: 300n * 100_000_000n,
+      lock: agentLockScript,
+      type: agentTypeScript,
+    },
+  ],
+  outputsData: [ccc.hexFrom(record)],
 });
 
 await tx.completeInputsByCapacity(cccSigner);

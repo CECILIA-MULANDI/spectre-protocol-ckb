@@ -14,6 +14,10 @@ export type Config = {
   // where the current agent cell lives
   agentCellTxHash: string;
   agentCellIndex: number;
+  // agent-type binary cell
+  typeCodeCellTxHash: string;
+  typeCodeCellIndex: number;
+  typeCodeHash: string;
 };
 
 export async function saveConfig(config: Config): Promise<void> {

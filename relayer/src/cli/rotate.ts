@@ -8,7 +8,16 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { cccClient, cccSigner } from "./network.js";
 import { loadConfig, saveConfig } from "./config.js";
+import { decodeAgentRecord, encodeAgentRecord } from "./molecule.js";
+
 const config = await loadConfig();
+const currentTx = await cccClient.getTransaction(config.agentCellTxHash);
+if (!currentTx) throw new Error("agent cell tx not found");
+const currentRecord = decodeAgentRecord(
+  ccc.bytesFrom(currentTx.transaction.outputsData[config.agentCellIndex]!)
+);
+console.log("current nonce:", currentRecord.nonce);
+
 const newPrivKey = process.argv[2];
 if (!newPrivKey) throw new Error("usage: rotate.ts <new-private-key>");
 const newPubKeyBytes = secp256k1.getPublicKey(ccc.bytesFrom(newPrivKey), true);
@@ -29,6 +38,20 @@ const newAgentLock = ccc.Script.from({
   args: newBlake160,
 });
 
+const agentTypeScript = ccc.Script.from({
+  codeHash: config.typeCodeHash,
+  hashType: "data1",
+  args: "0x",
+});
+
+const newRecord = encodeAgentRecord({
+  emailHash: currentRecord.emailHash,
+  identityCommitment: currentRecord.identityCommitment,
+  ownerPubkey: newPubKeyBytes,
+  timelockBlocks: currentRecord.timelockBlocks,
+  nonce: currentRecord.nonce + 1n,
+});
+
 const tx = ccc.Transaction.from({
   inputs: [
     {
@@ -43,9 +66,13 @@ const tx = ccc.Transaction.from({
       outPoint: { txHash: config.codeCellTxHash, index: config.codeCellIndex },
       depType: "code",
     },
+    {
+      outPoint: { txHash: config.typeCodeCellTxHash, index: config.typeCodeCellIndex },
+      depType: "code",
+    },
   ],
-  outputs: [{ capacity: 62n * 100_000_000n, lock: newAgentLock }],
-  outputsData: ["0x"],
+  outputs: [{ capacity: 300n * 100_000_000n, lock: newAgentLock, type: agentTypeScript }],
+  outputsData: [ccc.hexFrom(newRecord)],
 });
 tx.setWitnessArgsAt(0, ccc.WitnessArgs.from({ lock: "0x" + "00".repeat(98) }));
 await tx.completeFeeBy(cccSigner, 1000n);

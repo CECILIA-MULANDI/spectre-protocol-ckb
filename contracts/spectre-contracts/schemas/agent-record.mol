@@ -10,4 +10,10 @@ table AgentRecord {
     owner_pubkey:         Bytes,
     timelock_blocks:      Uint64,
     nonce:                Uint64,
+    // Packed blake160 hashes: N x 20 bytes
+    guardians: Bytes,
+    // m in m-of-n; 0 = guardian recovery disabled
+    guardian_threshold: Uint64,
+     // 33 bytes during recovery, 0 bytes otherwise
+    pending_owner_pubkey:  Bytes,  
 }

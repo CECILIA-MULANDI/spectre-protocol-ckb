@@ -15,6 +15,7 @@ dependencies = [
  "blake2",
  "ckb-std",
  "secp256k1 0.29.1",
+ "spectre-types",
 ]
 
 [[package]]
@@ -1563,6 +1564,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "recovery-lock"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "ckb-std",
+ "secp256k1 0.29.1",
+ "spectre-types",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1856,8 +1867,11 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "spectre-types"
 version = "0.1.0"
 dependencies = [
+ "blake2",
+ "ckb-std",
  "molecule",
  "molecule-codegen",
+ "secp256k1 0.29.1",
 ]
 
 [[package]]

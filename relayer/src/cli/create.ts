@@ -10,10 +10,37 @@ import { loadConfig, saveConfig } from "./config.js";
 import { encodeAgentRecord } from "./molecule.js";
 dotenv.config();
 
-const [email, secret, timelockArg] = process.argv.slice(2);
+//create.ts <email> <secret_phrase> [timelock_blocks] [guardian_pubkeys_csv] [threshold]
+//
+// guardian_pubkeys_csv: comma-separated compressed pubkey hex values (33 bytes each)
+// threshold:            m in m-of-n; defaults to total number of guardians
+//
+// example (1-of-1 guardian):
+//   create.ts alice@example.com mysecret 2880 0x02abcd...ef 1
+const [email, secret, timelockArg, guardiansArg, thresholdArg] =
+  process.argv.slice(2);
 if (!email || !secret)
-  throw new Error("usage: create.ts <email> <secret_phrase> [timelock_blocks]");
+  throw new Error(
+    "usage: create.ts <email> <secret_phrase> [timelock_blocks] [guardian_pubkeys_csv] [threshold]"
+  );
 const timelockBlocks = BigInt(timelockArg ?? "2880");
+
+// Parse guardian pubkeys → pack as N × 20-byte blake160 hashes.
+const guardianPubkeys = guardiansArg
+  ? guardiansArg
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : [];
+const guardianHashes = new Uint8Array(guardianPubkeys.length * 20);
+for (const [i, hex] of guardianPubkeys.entries()) {
+  const pubkey = ccc.bytesFrom(hex);
+  if (pubkey.length !== 33)
+    throw new Error(`guardian pubkey ${i} must be 33 bytes`);
+  const hash = blake2b(pubkey, { dkLen: 32 });
+  guardianHashes.set(hash.slice(0, 20), i * 20);
+}
+const guardianThreshold = BigInt(thresholdArg ?? guardianPubkeys.length);
 
 // Hash email and secret phrase with CKB's blake2b-256.
 // These become the immutable recovery commitments stored on-chain.
@@ -45,6 +72,9 @@ const record = encodeAgentRecord({
   ownerPubkey: pubkeyBytes,
   timelockBlocks: timelockBlocks,
   nonce: 0n,
+  guardians: guardianHashes,
+  guardianThreshold: guardianThreshold,
+  pendingOwnerPubkey: new Uint8Array(0),
 });
 const tx = ccc.Transaction.from({
   cellDeps: [
@@ -62,7 +92,7 @@ const tx = ccc.Transaction.from({
   ],
   outputs: [
     {
-      capacity: 300n * 100_000_000n,
+      capacity: BigInt(record.length + 94) * 100_000_000n,
       lock: agentLockScript,
       type: agentTypeScript,
     },

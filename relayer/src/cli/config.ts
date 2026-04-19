@@ -18,6 +18,10 @@ export type Config = {
   typeCodeCellTxHash: string;
   typeCodeCellIndex: number;
   typeCodeHash: string;
+  // recovery-lock binary cell (Phase 3)
+  recoveryLockCodeCellTxHash: string;
+  recoveryLockCodeCellIndex: number;
+  recoveryLockCodeHash: string;
 };
 
 export async function saveConfig(config: Config): Promise<void> {

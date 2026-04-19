@@ -50,6 +50,9 @@ const newRecord = encodeAgentRecord({
   ownerPubkey: newPubKeyBytes,
   timelockBlocks: currentRecord.timelockBlocks,
   nonce: currentRecord.nonce + 1n,
+  guardians: currentRecord.guardians,
+  guardianThreshold: currentRecord.guardianThreshold,
+  pendingOwnerPubkey: new Uint8Array(0),
 });
 
 const tx = ccc.Transaction.from({

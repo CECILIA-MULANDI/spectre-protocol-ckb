@@ -17,22 +17,14 @@ const lockBin = await readFile(resolve(CONTRACTS, "agent-lock"));
 const typeBin = await readFile(resolve(CONTRACTS, "agent-type"));
 
 const prevConfig = await loadConfig().catch(() => null);
-const prevInputs = prevConfig?.codeCellTxHash
-  ? [
-      {
-        previousOutput: {
-          txHash: prevConfig.codeCellTxHash,
-          index: prevConfig.codeCellIndex,
-        },
-      },
-      {
-        previousOutput: {
-          txHash: prevConfig.typeCodeCellTxHash,
-          index: prevConfig.typeCodeCellIndex,
-        },
-      },
-    ]
-  : [];
+const prevInputs = [
+  ...(prevConfig?.codeCellTxHash
+    ? [{ previousOutput: { txHash: prevConfig.codeCellTxHash, index: prevConfig.codeCellIndex } }]
+    : []),
+  ...(prevConfig?.typeCodeCellTxHash
+    ? [{ previousOutput: { txHash: prevConfig.typeCodeCellTxHash, index: prevConfig.typeCodeCellIndex } }]
+    : []),
+];
 
 const ownerScript = await cccSigner
   .getRecommendedAddressObj()
@@ -61,6 +53,9 @@ await saveConfig({
   typeCodeHash: ccc.hashCkb(typeBin),
   agentCellTxHash: prevConfig?.agentCellTxHash ?? "",
   agentCellIndex: prevConfig?.agentCellIndex ?? 0,
+  recoveryLockCodeCellTxHash: prevConfig?.recoveryLockCodeCellTxHash ?? "",
+  recoveryLockCodeCellIndex: prevConfig?.recoveryLockCodeCellIndex ?? 0,
+  recoveryLockCodeHash: prevConfig?.recoveryLockCodeHash ?? "",
 });
 console.log("agent-lock code hash:", ccc.hashCkb(lockBin));
 console.log("agent-type code hash:", ccc.hashCkb(typeBin));

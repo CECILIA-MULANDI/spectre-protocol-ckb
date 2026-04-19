@@ -284,5 +284,29 @@ coverage-install:
 coverage-clean:
 	rm -rf $(COVERAGE_DIR)
 
+# ============================================================================
+# Debugger targets
+# ============================================================================
+#
+# debug-gen-mock  — generate the transaction mock JSON from the compiled binary
+# debug-agent-type — run ckb-debugger against the agent-type script (key rotation)
+#
+# Requires: make build  (RISC-V binary must exist first)
+# Requires: cd relayer && npm install  (node_modules must exist)
+
+RELAYER_DIR := $(cur_dir)../../relayer
+MOCK_FILE   := $(cur_dir)mock/agent_type_rotate.json
+
+debug-gen-mock:
+	cd $(RELAYER_DIR) && npx tsx src/mock/gen_agent_type.ts
+
+debug-agent-type: debug-gen-mock
+	ckb-debugger \
+		--tx-file $(MOCK_FILE) \
+		--script-group-type type \
+		--cell-index 0 \
+		--cell-type output
+
 .PHONY: build test check clippy fmt cargo clean prepare checksum \
-        build-sim build-sim-cov coverage-run-tests coverage coverage-html coverage-lcov coverage-install coverage-clean
+        build-sim build-sim-cov coverage-run-tests coverage coverage-html coverage-lcov coverage-install coverage-clean \
+        debug-gen-mock debug-agent-type

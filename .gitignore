@@ -16,7 +16,6 @@ circuits/target/
 circuits/out/
 
 # Personal working docs — not for public repo
-docs/
 *.md
 !README.md
 .claude/

@@ -17,11 +17,11 @@ import { cccClient, cccSigner } from "./network.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { decodeAgentRecord, encodeAgentRecord } from "./molecule.js";
 
-const guardianPrivKey = process.argv[2];
-const newOwnerPubKeyHex = process.argv[3];
-if (!guardianPrivKey || !newOwnerPubKeyHex)
+const newOwnerPubKeyHex = process.argv[2];
+const guardianPrivKeys = process.argv.slice(3);
+if (!newOwnerPubKeyHex || guardianPrivKeys.length === 0)
   throw new Error(
-    "usage: initiate-recovery.ts <guardian-private-key> <new-owner-pubkey-hex>"
+    "usage: initiate-recovery.ts <new-owner-pubkey-hex> <guardian-key-1> [guardian-key-2] ..."
   );
 
 const config = await loadConfig();
@@ -34,6 +34,11 @@ const currentRecord = decodeAgentRecord(
 );
 console.log("current nonce:", currentRecord.nonce);
 console.log("guardian threshold:", currentRecord.guardianThreshold);
+
+if (guardianPrivKeys.length < currentRecord.guardianThreshold)
+  throw new Error(
+    `need at least ${currentRecord.guardianThreshold} guardian keys, got ${guardianPrivKeys.length}`
+  );
 
 const newOwnerPubKey = ccc.bytesFrom(newOwnerPubKeyHex);
 if (newOwnerPubKey.length !== 33)
@@ -101,28 +106,29 @@ const tx = ccc.Transaction.from({
   outputsData: [ccc.hexFrom(pendingRecord)],
 });
 
-// Guardian witness: [0x01][recovery_id][r+s][compressed_pubkey]
-// The 0x01 prefix tells agent-lock to use the guardian path.
-tx.setWitnessArgsAt(0, ccc.WitnessArgs.from({ lock: "0x" + "00".repeat(99) }));
+// Guardian witness: [0x01][sig1 (98)][sig2 (98)]...[sigM (98)]
+// Each sig block: [recovery_id (1)][r+s (64)][compressed_pubkey (33)] = 98 bytes
+const witnessLen = 1 + guardianPrivKeys.length * 98;
+tx.setWitnessArgsAt(0, ccc.WitnessArgs.from({ lock: "0x" + "00".repeat(witnessLen) }));
 await tx.completeFeeBy(cccSigner, 1000n);
 
 const rawTxHash = tx.hash();
-const guardianPubKey = secp256k1.getPublicKey(
-  ccc.bytesFrom(guardianPrivKey),
-  true
-);
-const sig = secp256k1.sign(
-  ccc.bytesFrom(rawTxHash),
-  ccc.bytesFrom(guardianPrivKey)
-);
 
-const witness = new Uint8Array(99);
+const witness = new Uint8Array(witnessLen);
 witness[0] = 0x01; // guardian path marker
-witness[1] = sig.recovery;
-witness.set(sig.toCompactRawBytes(), 2); // r+s at offset 2
-witness.set(guardianPubKey, 66); // compressed pubkey at offset 66
 
-// Sign fee inputs (input[1]) via cccSigner, then overwrite witness[0] with guardian sig.
+for (let i = 0; i < guardianPrivKeys.length; i++) {
+  const privKey = ccc.bytesFrom(guardianPrivKeys[i]!);
+  const pubKey = secp256k1.getPublicKey(privKey, true);
+  const sig = secp256k1.sign(ccc.bytesFrom(rawTxHash), privKey);
+
+  const offset = 1 + i * 98;
+  witness[offset] = sig.recovery;
+  witness.set(sig.toCompactRawBytes(), offset + 1); // r+s
+  witness.set(pubKey, offset + 65); // compressed pubkey
+}
+
+// Sign fee inputs (input[1]) via cccSigner, then overwrite witness[0] with guardian sigs.
 // Order matters: secp256k1 sighash for input[1] does NOT include witness[0] (different lock group),
 // so setting witness[0] after the fact does not invalidate input[1]'s signature.
 const signedTx = await cccSigner.signTransaction(tx);

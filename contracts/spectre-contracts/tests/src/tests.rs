@@ -1,12 +1,17 @@
 use ckb_testtool::builtin::ALWAYS_SUCCESS;
-use ckb_testtool::ckb_types::{bytes::Bytes, core::TransactionBuilder, packed::*, prelude::*};
+use ckb_testtool::ckb_types::{bytes::Bytes, core::TransactionBuilder, packed::*, prelude::*, core::DepType};
 use ckb_testtool::context::Context;
 use molecule::prelude::Byte;
 use spectre_types::prelude::{Builder, Entity};
 use spectre_types::{AgentRecord, Byte32, Bytes as MolBytes, Uint64};
 
+use blake2::{Blake2bVar, digest::{Update, VariableOutput}};
+use secp256k1::{Secp256k1, SecretKey, Message};
+use secp256k1::rand::thread_rng;
+
 const MAX_CYCLES: u64 = 10_000_000;
 
+const AGENT_LOCK_BIN: &str = "../target/riscv64imac-unknown-none-elf/release/agent-lock";
 const AGENT_TYPE_BIN: &str = "../target/riscv64imac-unknown-none-elf/release/agent-type";
 const RECOVERY_LOCK_BIN: &str = "../target/riscv64imac-unknown-none-elf/release/recovery-lock";
 
@@ -534,4 +539,306 @@ fn test_recovery_lock_wrong_since_format() {
     context
         .verify_tx(&tx, MAX_CYCLES)
         .expect_err("should fail: since must be relative block number");
+}
+
+// ── Agent-lock guardian (M-of-N) tests ──────────────────────────────────────
+
+fn blake160(data: &[u8]) -> [u8; 20] {
+    let mut hasher = Blake2bVar::new(32).unwrap();
+    hasher.update(data);
+    let mut out = [0u8; 32];
+    hasher.finalize_variable(&mut out).unwrap();
+    let mut result = [0u8; 20];
+    result.copy_from_slice(&out[..20]);
+    result
+}
+
+fn setup_agent_lock() -> (Context, OutPoint, OutPoint) {
+    let mut context = Context::default();
+    let agent_lock_bin = std::fs::read(AGENT_LOCK_BIN)
+        .expect("agent-lock binary not found — run `make build` first");
+    let agent_lock_out_point = context.deploy_cell(Bytes::from(agent_lock_bin));
+    let agent_type_bin = std::fs::read(AGENT_TYPE_BIN)
+        .expect("agent-type binary not found — run `make build` first");
+    let agent_type_out_point = context.deploy_cell(Bytes::from(agent_type_bin));
+    (context, agent_lock_out_point, agent_type_out_point)
+}
+
+/// Build guardian witness: [0x01][sig1 (98)][sig2 (98)]...[sigM (98)]
+/// Each sig block: [recovery_id (1)][r+s (64)][compressed_pubkey (33)]
+fn build_guardian_witness(tx_hash: &[u8; 32], keys: &[SecretKey]) -> Bytes {
+    let secp = Secp256k1::new();
+    let msg = Message::from_digest_slice(tx_hash).unwrap();
+    let mut witness = vec![0x01u8]; // guardian path marker
+
+    for key in keys {
+        let sig = secp.sign_ecdsa_recoverable(&msg, key);
+        let (recovery_id, compact) = sig.serialize_compact();
+        let pubkey = key.public_key(&secp).serialize(); // 33 bytes compressed
+
+        witness.push(recovery_id.to_i32() as u8);
+        witness.extend_from_slice(&compact); // 64 bytes r+s
+        witness.extend_from_slice(&pubkey);  // 33 bytes
+    }
+    Bytes::from(witness)
+}
+
+/// 2-of-3 guardian recovery: two valid guardian sigs out of three registered. Should pass.
+#[test]
+fn test_agent_lock_guardian_2_of_3() {
+    let (mut context, agent_lock_out_point, agent_type_out_point) = setup_agent_lock();
+    let secp = Secp256k1::new();
+    let mut rng = thread_rng();
+
+    // Generate 3 guardian keys.
+    let guardian_keys: Vec<SecretKey> = (0..3)
+        .map(|_| SecretKey::new(&mut rng))
+        .collect();
+    let guardian_hashes: Vec<[u8; 20]> = guardian_keys
+        .iter()
+        .map(|k| blake160(&k.public_key(&secp).serialize()))
+        .collect();
+
+    // Owner key for lock.args.
+    let owner_key = SecretKey::new(&mut rng);
+    let owner_pubkey = owner_key.public_key(&secp).serialize();
+    let owner_hash = blake160(&owner_pubkey);
+
+    // Guardians field: 3 packed blake160 hashes = 60 bytes.
+    let guardians: Vec<u8> = guardian_hashes.iter().flat_map(|h| h.iter().copied()).collect();
+
+    let cell_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardians, 2, &[],
+    );
+
+    let agent_lock = context
+        .build_script(&agent_lock_out_point, Bytes::from(owner_hash.to_vec()))
+        .expect("agent-lock script");
+    let agent_type = context
+        .build_script(&agent_type_out_point, Bytes::new())
+        .expect("agent-type script");
+
+    let input_out_point = context.create_cell(
+        CellOutput::new_builder()
+            .capacity(1000u64)
+            .lock(agent_lock.clone())
+            .type_(Some(agent_type.clone()).pack())
+            .build(),
+        cell_data,
+    );
+
+    // Output: initiate recovery (pending set, nonce unchanged).
+    let output_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardians, 2, &[4u8; 33],
+    );
+
+    let tx = TransactionBuilder::default()
+        .input(CellInput::new(input_out_point, 0))
+        .output(
+            CellOutput::new_builder()
+                .capacity(900u64)
+                .lock(agent_lock.clone())
+                .type_(Some(agent_type).pack())
+                .build(),
+        )
+        .output_data(output_data.pack())
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_lock_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_type_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .build();
+
+    // Sign with guardians 0 and 1 (2-of-3).
+    let tx = context.complete_tx(tx);
+    let tx_hash: [u8; 32] = tx.hash().raw_data().to_vec().try_into().unwrap();
+    let witness_data = build_guardian_witness(&tx_hash, &[guardian_keys[0], guardian_keys[1]]);
+
+    let witness = WitnessArgs::new_builder()
+        .lock(Some(witness_data).pack())
+        .build();
+    let tx = tx
+        .as_advanced_builder()
+        .set_witnesses(vec![witness.as_bytes().pack()])
+        .build();
+
+    context
+        .verify_tx(&tx, MAX_CYCLES)
+        .expect("2-of-3 guardian sigs should pass");
+}
+
+/// 1-of-3 when threshold is 2. Should fail (ERROR_INSUFFICIENT_GUARDIAN_SIGS = 6).
+#[test]
+fn test_agent_lock_guardian_insufficient_sigs() {
+    let (mut context, agent_lock_out_point, agent_type_out_point) = setup_agent_lock();
+    let secp = Secp256k1::new();
+    let mut rng = thread_rng();
+
+    let guardian_keys: Vec<SecretKey> = (0..3)
+        .map(|_| SecretKey::new(&mut rng))
+        .collect();
+    let guardian_hashes: Vec<[u8; 20]> = guardian_keys
+        .iter()
+        .map(|k| blake160(&k.public_key(&secp).serialize()))
+        .collect();
+
+    let owner_key = SecretKey::new(&mut rng);
+    let owner_pubkey = owner_key.public_key(&secp).serialize();
+    let owner_hash = blake160(&owner_pubkey);
+
+    let guardians: Vec<u8> = guardian_hashes.iter().flat_map(|h| h.iter().copied()).collect();
+
+    let cell_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardians, 2, &[],
+    );
+
+    let agent_lock = context
+        .build_script(&agent_lock_out_point, Bytes::from(owner_hash.to_vec()))
+        .expect("agent-lock script");
+    let agent_type = context
+        .build_script(&agent_type_out_point, Bytes::new())
+        .expect("agent-type script");
+
+    let input_out_point = context.create_cell(
+        CellOutput::new_builder()
+            .capacity(1000u64)
+            .lock(agent_lock.clone())
+            .type_(Some(agent_type.clone()).pack())
+            .build(),
+        cell_data,
+    );
+
+    let output_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardians, 2, &[4u8; 33],
+    );
+
+    let tx = TransactionBuilder::default()
+        .input(CellInput::new(input_out_point, 0))
+        .output(
+            CellOutput::new_builder()
+                .capacity(900u64)
+                .lock(agent_lock.clone())
+                .type_(Some(agent_type).pack())
+                .build(),
+        )
+        .output_data(output_data.pack())
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_lock_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_type_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .build();
+
+    // Only 1 guardian sig — threshold is 2.
+    let tx = context.complete_tx(tx);
+    let tx_hash: [u8; 32] = tx.hash().raw_data().to_vec().try_into().unwrap();
+    let witness_data = build_guardian_witness(&tx_hash, &[guardian_keys[0]]);
+
+    let witness = WitnessArgs::new_builder()
+        .lock(Some(witness_data).pack())
+        .build();
+    let tx = tx
+        .as_advanced_builder()
+        .set_witnesses(vec![witness.as_bytes().pack()])
+        .build();
+
+    context
+        .verify_tx(&tx, MAX_CYCLES)
+        .expect_err("should fail: only 1 of 2 required guardian sigs");
+}
+
+/// Non-guardian key signs. Should fail even if threshold is 1.
+#[test]
+fn test_agent_lock_guardian_wrong_key() {
+    let (mut context, agent_lock_out_point, agent_type_out_point) = setup_agent_lock();
+    let secp = Secp256k1::new();
+    let mut rng = thread_rng();
+
+    let guardian_key = SecretKey::new(&mut rng);
+    let guardian_hash = blake160(&guardian_key.public_key(&secp).serialize());
+
+    let impostor_key = SecretKey::new(&mut rng);
+
+    let owner_key = SecretKey::new(&mut rng);
+    let owner_pubkey = owner_key.public_key(&secp).serialize();
+    let owner_hash = blake160(&owner_pubkey);
+
+    let cell_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardian_hash, 1, &[],
+    );
+
+    let agent_lock = context
+        .build_script(&agent_lock_out_point, Bytes::from(owner_hash.to_vec()))
+        .expect("agent-lock script");
+    let agent_type = context
+        .build_script(&agent_type_out_point, Bytes::new())
+        .expect("agent-type script");
+
+    let input_out_point = context.create_cell(
+        CellOutput::new_builder()
+            .capacity(1000u64)
+            .lock(agent_lock.clone())
+            .type_(Some(agent_type.clone()).pack())
+            .build(),
+        cell_data,
+    );
+
+    let output_data = make_full_record(
+        [1u8; 32], owner_pubkey, 5, 2880, &guardian_hash, 1, &[4u8; 33],
+    );
+
+    let tx = TransactionBuilder::default()
+        .input(CellInput::new(input_out_point, 0))
+        .output(
+            CellOutput::new_builder()
+                .capacity(900u64)
+                .lock(agent_lock.clone())
+                .type_(Some(agent_type).pack())
+                .build(),
+        )
+        .output_data(output_data.pack())
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_lock_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .cell_dep(
+            CellDep::new_builder()
+                .out_point(agent_type_out_point)
+                .dep_type(DepType::Code)
+                .build(),
+        )
+        .build();
+
+    // Sign with impostor key — not in the guardian list.
+    let tx = context.complete_tx(tx);
+    let tx_hash: [u8; 32] = tx.hash().raw_data().to_vec().try_into().unwrap();
+    let witness_data = build_guardian_witness(&tx_hash, &[impostor_key]);
+
+    let witness = WitnessArgs::new_builder()
+        .lock(Some(witness_data).pack())
+        .build();
+    let tx = tx
+        .as_advanced_builder()
+        .set_witnesses(vec![witness.as_bytes().pack()])
+        .build();
+
+    context
+        .verify_tx(&tx, MAX_CYCLES)
+        .expect_err("should fail: signer is not a registered guardian");
 }
